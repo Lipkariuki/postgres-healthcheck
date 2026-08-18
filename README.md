@@ -1,44 +1,168 @@
 # PostgreSQL Health Check
 
-A lightweight PostgreSQL diagnostic tool for identifying database health issues and surfacing actionable troubleshooting information.
+A lightweight, support-engineering-focused PostgreSQL diagnostic tool that turns PostgreSQL system statistics into **actionable health findings**.
 
-The project is designed around a common production support problem: **when PostgreSQL appears slow or unhealthy, where do you start?**
+The project is built around a simple production question:
 
-Rather than immediately digging through multiple system views manually, PostgreSQL Health Check provides focused checks that can be run against a database to quickly understand its current state.
+> **When PostgreSQL appears slow or unhealthy, where should an engineer start investigating?**
 
-## Why This Project?
+Instead of manually querying multiple system views and interpreting raw metrics, PostgreSQL Health Check aims to provide focused diagnostics, explain why a finding matters, and suggest the next investigation step.
 
-Database incidents often begin with vague symptoms:
+---
+
+# Why This Project?
+
+Database incidents rarely begin with a clear root cause.
+
+They usually start with symptoms such as:
 
 * "The application is slow."
 * "Requests are timing out."
 * "The database has too many connections."
-* "Something is consuming all available connections."
-* "Postgres looks unhealthy."
+* "PostgreSQL is refusing new clients."
+* "The database looks healthy, but users are still experiencing latency."
 
-The challenge for a support engineer is turning those symptoms into useful evidence.
+The challenge for a Support Engineer is turning those symptoms into evidence.
 
-This project explores how PostgreSQL exposes operational information through its system views and how that information can be turned into practical health checks.
+PostgreSQL already exposes a large amount of operational information through views such as:
 
-The initial implementation focuses on **connection health**, with additional PostgreSQL diagnostics planned as the project evolves.
+```sql
+pg_stat_activity
+pg_stat_database
+pg_stat_user_tables
+pg_stat_user_indexes
+pg_stat_statements
+pg_locks
+```
 
-## Current Capabilities
+The goal of this project is to turn that raw information into a practical troubleshooting workflow.
 
-### Connection Health
+```text
+Application symptom
+        │
+        ▼
+PostgreSQL statistics
+        │
+        ▼
+Health check
+        │
+        ▼
+Finding
+        │
+        ▼
+Recommended investigation
+```
 
-The tool inspects PostgreSQL connection activity and reports information that can help identify connection pressure.
+---
 
-This provides a starting point for investigating problems such as:
+# Current Capabilities
 
-* connection exhaustion
-* unexpectedly high database activity
-* application connection leaks
-* idle connection accumulation
-* workloads approaching PostgreSQL connection limits
+## Connection Health
 
-The implementation is intentionally modular so additional diagnostic checks can be added independently.
+The first implemented health check analyzes PostgreSQL connection usage using `pg_stat_activity` and the configured `max_connections`.
 
-## Architecture
+It currently reports:
+
+* Current PostgreSQL connections
+* Maximum configured connections
+* Connection utilization percentage
+* Active connections
+* Idle connections
+* Idle-in-transaction sessions
+* Oldest idle-in-transaction session
+* Health status
+* Actionable recommendations
+
+Example:
+
+```text
+✅ Connected to PostgreSQL
+
+Connection Health
+Status: healthy
+Connections: 11 / 100
+Utilization: 11.0%
+Active: 1
+Idle: 4
+Idle in transaction: 1
+
+Recommendation:
+Connection capacity is healthy.
+
+Urgent: the oldest idle-in-transaction session has been open for
+361801 seconds.
+
+Investigate the session owner and application behavior.
+
+Long-lived open transactions can retain locks, prevent VACUUM from
+reclaiming obsolete tuple versions, and contribute to table bloat.
+```
+
+This demonstrates an important design principle of the project:
+
+> **A healthy headline metric does not necessarily mean the database has nothing worth investigating.**
+
+Connection utilization may be low while a long-running transaction still presents operational risk.
+
+---
+
+# Health Check Philosophy
+
+The tool follows three principles.
+
+## Detect
+
+Identify potentially important PostgreSQL conditions.
+
+Example:
+
+```text
+Idle in transaction: 1
+```
+
+## Explain
+
+Describe why the condition matters.
+
+Example:
+
+```text
+Long-running transactions may retain locks and prevent VACUUM
+from reclaiming obsolete tuples.
+```
+
+## Guide
+
+Recommend the next investigation rather than automatically making changes.
+
+Example:
+
+```text
+Investigate the owning application and transaction before
+considering termination.
+```
+
+The tool intentionally avoids destructive automatic remediation.
+
+---
+
+# Connection Health Thresholds
+
+The initial connection-utilization thresholds are:
+
+| Utilization | Status   |
+| ----------- | -------- |
+| Below 70%   | Healthy  |
+| 70% to 90%  | Warning  |
+| Above 90%   | Critical |
+
+These are application-level defaults, not universal PostgreSQL rules.
+
+Different environments have different workloads and capacity requirements. Future versions will make health thresholds configurable.
+
+---
+
+# Architecture
 
 ```text
                      PostgreSQL
@@ -47,7 +171,7 @@ The implementation is intentionally modular so additional diagnostic checks can 
                          ▼
                 ┌─────────────────┐
                 │ Database Layer  │
-                │  database.py    │
+                │   database.py   │
                 └────────┬────────┘
                          │
                          ▼
@@ -65,14 +189,34 @@ The implementation is intentionally modular so additional diagnostic checks can 
                          │
                          ▼
                 ┌─────────────────┐
-                │   Application   │
+                │      CLI        │
                 │     main.py     │
                 └─────────────────┘
 ```
 
-The project separates database connectivity, diagnostic logic, and health result models so new checks can be introduced without tightly coupling them to the application entry point.
+Database connectivity, diagnostic logic, result models, and presentation are kept separate so additional checks can be added without tightly coupling the application.
 
-## Project Structure
+Each future diagnostic module will follow the same general pattern:
+
+```text
+Run SQL
+   │
+   ▼
+Collect metrics
+   │
+   ▼
+Evaluate health
+   │
+   ▼
+Explain finding
+   │
+   ▼
+Recommend next step
+```
+
+---
+
+# Project Structure
 
 ```text
 postgres-healthcheck/
@@ -89,8 +233,7 @@ postgres-healthcheck/
 │   ├── config.py
 │   ├── database.py
 │   ├── main.py
-│   ├── requirements.txt
-│   └── .env.example
+│   └── requirements.txt
 │
 ├── database/
 │   └── init.sql
@@ -104,24 +247,65 @@ postgres-healthcheck/
 └── README.md
 ```
 
-## Getting Started
+---
 
-### Prerequisites
+# Local PostgreSQL Lab
+
+The repository includes a Docker-based PostgreSQL environment for safely reproducing database conditions.
+
+This makes it possible to deliberately create scenarios such as:
+
+* Idle-in-transaction sessions
+* Long-running transactions
+* Lock contention
+* Connection pressure
+* Slow queries
+* Missing indexes
+* Sequential scans
+* Autovacuum activity
+
+The lab allows each health check to be validated against a real PostgreSQL condition rather than relying only on mocked test data.
+
+```text
+Create PostgreSQL condition
+            │
+            ▼
+Observe it manually
+            │
+            ▼
+Run PostgreSQL Health Check
+            │
+            ▼
+Verify detection
+```
+
+---
+
+# Getting Started
+
+## Prerequisites
 
 You will need:
 
 * Python 3
-* PostgreSQL
-* Docker and Docker Compose, if using the included local database environment
+* Docker Desktop
+* Docker Compose
+* Git
 
-## 1. Clone the Repository
+A standalone PostgreSQL installation is not required when using the included Docker environment.
+
+---
+
+# 1. Clone the Repository
 
 ```bash
-git clone git@github.com:Lipkariuki/postgres-healthcheck.git
+git clone https://github.com/Lipkariuki/postgres-healthcheck.git
 cd postgres-healthcheck
 ```
 
-## 2. Create a Python Virtual Environment
+---
+
+# 2. Create a Python Virtual Environment
 
 ```bash
 python3 -m venv .venv
@@ -133,51 +317,67 @@ Activate it on macOS/Linux:
 source .venv/bin/activate
 ```
 
-Install the Python dependencies:
+Install dependencies:
 
 ```bash
 pip install -r backend/requirements.txt
 ```
 
-## 3. Configure the Environment
+---
 
-Copy the example environment configuration:
+# 3. Configure the Environment
+
+Copy the example configuration:
 
 ```bash
 cp .env.example .env
 ```
 
-Update the values in `.env` for your PostgreSQL environment.
+The local Docker lab uses values similar to:
 
-Never commit real database credentials to the repository.
+```env
+DB_HOST=localhost
+DB_PORT=5432
+DB_NAME=healthcheck_db
+DB_USER=postgres
+DB_PASSWORD=postgres
+```
 
-## 4. Start PostgreSQL with Docker
+Never commit real database credentials.
 
-The repository includes a Docker Compose configuration for running a local PostgreSQL environment.
+---
+
+# 4. Start PostgreSQL
+
+Start the local environment:
 
 ```bash
 docker compose up -d
 ```
 
-Check that the container is running:
+Check its status:
 
 ```bash
 docker compose ps
 ```
 
-To inspect its logs:
+View logs:
 
 ```bash
 docker compose logs
 ```
 
-To stop the environment:
+Stop PostgreSQL:
 
 ```bash
 docker compose down
 ```
 
-## 5. Run the Health Check
+The included initialization SQL creates sample tables used by future health-check scenarios.
+
+---
+
+# 5. Run the Health Check
 
 From the repository root:
 
@@ -185,133 +385,303 @@ From the repository root:
 python3 backend/main.py
 ```
 
-The application connects to PostgreSQL using the configured environment and executes the available health checks.
-
-## Running Tests
-
-Run the test suite with:
-
-```bash
-pytest
-```
-
-Or run the connection health tests directly:
-
-```bash
-pytest tests/test_connection_health.py -v
-```
-
-Tests are used to validate the diagnostic logic independently from manual database investigation.
-
-## PostgreSQL Concepts Explored
-
-This project is also a practical environment for learning PostgreSQL internals and production troubleshooting.
-
-Areas explored include:
-
-**Connections**
-
-Understanding how clients consume PostgreSQL connections and how connection pressure can affect application availability.
-
-**PostgreSQL system views**
-
-Using PostgreSQL's built-in operational information to investigate database behaviour rather than treating the database as a black box.
-
-**Health thresholds**
-
-Turning raw database statistics into understandable states that can help an engineer decide whether further investigation is necessary.
-
-**Troubleshooting methodology**
-
-Moving from:
+Expected connection output:
 
 ```text
-Application symptom
-        ↓
-Database evidence
-        ↓
-Health check
-        ↓
-Diagnosis
-        ↓
-Recommended investigation
+✅ Connected to PostgreSQL
 ```
 
-This mirrors the type of reasoning required during production incidents.
+The available health checks will then run against the configured database.
 
-## Roadmap
+---
 
-The current connection check is the foundation for a broader PostgreSQL diagnostic toolkit.
+# Running Tests
 
-Planned areas of exploration include:
+The current test suite uses Python's built-in `unittest` framework.
+
+Run all tests:
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+Run the connection-health tests directly:
+
+```bash
+python3 -m unittest tests.test_connection_health -v
+```
+
+Tests validate diagnostic behavior independently of the Docker PostgreSQL environment.
+
+Current test coverage includes:
+
+* Healthy connection utilization
+* Warning utilization
+* Critical utilization
+* Idle-in-transaction detection
+* Empty idle-transaction state
+* Urgent long-running idle transaction recommendations
+
+---
+
+# PostgreSQL Concepts Used
+
+## `pg_stat_activity`
+
+Used to understand what PostgreSQL sessions are doing right now.
+
+Important states include:
+
+```text
+active
+idle
+idle in transaction
+idle in transaction (aborted)
+```
+
+The current connection module uses this view to identify active, idle, and open transactional sessions.
+
+---
+
+## `max_connections`
+
+Defines the configured PostgreSQL connection limit.
+
+The tool compares current connections against this value to calculate utilization.
+
+---
+
+## Long-Running Transactions
+
+An idle-in-transaction session may appear harmless because no SQL is currently running.
+
+However, a transaction left open for a long period can:
+
+* Retain locks
+* Prevent VACUUM from reclaiming obsolete tuple versions
+* Increase table bloat
+* Interfere with database maintenance
+
+This is why the tool evaluates more than connection percentage alone.
+
+---
+
+# Development Approach
+
+The project is intentionally being developed one diagnostic module at a time.
+
+Each feature follows this workflow:
+
+```text
+Understand the PostgreSQL problem
+            │
+            ▼
+Design the investigation
+            │
+            ▼
+Write and validate the SQL
+            │
+            ▼
+Implement the health check
+            │
+            ▼
+Write automated tests
+            │
+            ▼
+Create the condition in the Docker lab
+            │
+            ▼
+Verify end-to-end detection
+```
+
+The objective is not simply to build a dashboard.
+
+The objective is to encode a repeatable **Support Engineer troubleshooting methodology**.
+
+---
+
+# Roadmap
+
+## Foundation
 
 * [x] PostgreSQL connectivity
-* [x] Connection health checks
+* [x] Environment configuration
+* [x] Docker-based PostgreSQL lab
+* [x] Shared health-result model
 * [x] Automated tests
-* [x] Docker-based local PostgreSQL environment
-* [ ] Long-running query detection
-* [ ] Lock and blocking-session detection
-* [ ] Database size monitoring
-* [ ] Table and index health
-* [ ] Cache and memory-related statistics
-* [ ] Transaction health
-* [ ] Vacuum and dead tuple diagnostics
-* [ ] Replication health
-* [ ] Structured CLI output
-* [ ] Diagnostic recommendations
 
-The goal is not to replace full observability platforms, but to understand and automate the PostgreSQL investigation techniques that engineers use when diagnosing database incidents.
+## Connection Diagnostics
 
-## Example Troubleshooting Scenario
+* [x] Current connection count
+* [x] `max_connections` utilization
+* [x] Active connection count
+* [x] Idle connection count
+* [x] Idle-in-transaction detection
+* [x] Oldest idle transaction detection
+* [x] Actionable connection recommendations
+* [ ] Connection usage by application
+* [ ] Connection usage by database user
+* [ ] Connection-pool awareness
 
-Consider an application that begins returning intermittent database connection errors.
+## Transaction & Lock Health
 
-A typical investigation might ask:
+* [ ] Long-running transaction detection
+* [ ] Blocking session detection
+* [ ] Lock contention analysis
+* [ ] Deadlock-related diagnostics
 
-1. Can the application reach PostgreSQL?
-2. How many connections currently exist?
-3. What is the configured connection limit?
-4. How close is the database to that limit?
-5. Are connections active or idle?
-6. Is one application or user responsible for unusual connection usage?
+## Database Health
 
-A health check can automate the first layer of this investigation and surface evidence for deeper troubleshooting.
+* [ ] Cache hit ratio
+* [ ] Commit / rollback analysis
+* [ ] Temporary file usage
+* [ ] Database-size overview
 
-## Security
+## Table & Maintenance Health
+
+* [ ] Live and dead tuple analysis
+* [ ] Autovacuum health
+* [ ] Vacuum progress
+* [ ] Analyze freshness
+* [ ] Table-size analysis
+* [ ] Bloat indicators
+
+## Index Health
+
+* [ ] Index usage
+* [ ] Large unused-index review
+* [ ] Index-size analysis
+* [ ] Sequential vs index scan analysis
+
+## Query Performance
+
+* [ ] `pg_stat_statements` integration
+* [ ] Top cumulative query time
+* [ ] Mean and maximum execution-time analysis
+* [ ] Query-plan investigation guidance
+
+## WAL & Replication
+
+* [ ] WAL health
+* [ ] WAL growth indicators
+* [ ] Replication status
+* [ ] Replica lag analysis
+* [ ] Replication-slot health
+
+## User Experience
+
+* [ ] Structured JSON output
+* [ ] Configurable thresholds
+* [ ] Rich CLI output
+* [ ] Exportable diagnostic report
+* [ ] Web dashboard
+
+---
+
+# Example Troubleshooting Workflow
+
+A customer reports:
+
+> "The application cannot consistently connect to PostgreSQL."
+
+A Support Engineer may ask:
+
+```text
+Can PostgreSQL be reached?
+        │
+        ▼
+How many connections exist?
+        │
+        ▼
+What is max_connections?
+        │
+        ▼
+How close are we to the limit?
+        │
+        ▼
+Are sessions active or idle?
+        │
+        ▼
+Are transactions being left open?
+        │
+        ▼
+Is connection pooling being used?
+        │
+        ▼
+Which application owns the sessions?
+```
+
+PostgreSQL Health Check aims to automate the first layer of that investigation and surface the evidence required for deeper troubleshooting.
+
+---
+
+# Security
 
 Database credentials should always be supplied through environment variables.
 
-The repository intentionally includes `.env.example` files containing configuration templates rather than real credentials.
+The repository contains:
 
-Before committing changes, verify that secrets are not tracked:
+```text
+.env.example
+```
+
+for configuration examples.
+
+The real:
+
+```text
+.env
+```
+
+must remain untracked.
+
+Before committing changes, verify:
 
 ```bash
 git status
 git ls-files .env
 ```
 
-Production databases should also be accessed using appropriately restricted PostgreSQL roles rather than administrative credentials whenever possible.
+The second command should return no tracked `.env` file.
 
-## Learning Goals
+For production environments, use an appropriately restricted PostgreSQL monitoring role whenever possible rather than administrative credentials.
 
-This project is being built as a hands-on exploration of:
+The tool is designed to **observe and recommend**, not automatically modify production databases.
 
-* PostgreSQL administration
-* database troubleshooting
-* production support engineering
+---
+
+# Project Goals
+
+This project is designed to demonstrate and deepen practical experience in:
+
+* PostgreSQL internals
+* Database troubleshooting
+* Production Support Engineering
+* Query-performance investigation
 * Python automation
-* testing diagnostic logic
-* incident investigation
-* observability fundamentals
+* Testing diagnostic logic
+* Incident investigation
+* Observability fundamentals
+* Developer tooling
 
-The emphasis is on understanding **why a PostgreSQL system becomes unhealthy and how an engineer can prove the cause using database evidence**.
+The central principle is:
 
-## Contributing
+> **Do not guess why PostgreSQL is unhealthy. Gather evidence, understand the condition, and recommend the next investigation step.**
 
-This project is primarily a learning and experimentation environment, but suggestions and improvements are welcome.
+---
 
-If you find an issue or have an idea for another PostgreSQL health check, feel free to open an issue or submit a pull request.
+# Contributing
 
-## License
+Suggestions, bug reports, and ideas for additional PostgreSQL health checks are welcome.
 
-This project is intended for educational and experimental use.
+If you have an investigation pattern that could be useful to other Support Engineers, feel free to open an issue or submit a pull request.
+
+---
+
+# Project Status
+
+🚧 **Active development**
+
+The current release establishes the diagnostic architecture and implements connection-health analysis.
+
+Additional PostgreSQL health checks are being added incrementally and validated against reproducible scenarios in the included Docker lab.

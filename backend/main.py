@@ -1,6 +1,7 @@
 """Command-line entry point for the PostgreSQL health check."""
 
 from checks.connections import check_connection_health
+from checks.database_health import check_database_health
 from checks.locks import check_lock_health
 from checks.transactions import check_transaction_health
 from config import ConfigError
@@ -18,6 +19,7 @@ def main() -> None:
                 check_connection_health(connection),
                 check_transaction_health(connection),
                 check_lock_health(connection),
+                check_database_health(connection),
             ]
             for index, result in enumerate(results):
                 if index > 0:
@@ -43,6 +45,8 @@ def _print_health_check_result(result: HealthCheckResult) -> None:
         _print_transaction_metrics(metrics)
     elif result.name == "Lock Health":
         _print_lock_metrics(metrics)
+    elif result.name == "Database Health":
+        _print_database_metrics(metrics)
 
     print()
     print("Recommendation:")
@@ -106,6 +110,32 @@ def _print_lock_metrics(metrics: dict[str, object]) -> None:
     )
 
 
+def _print_database_metrics(metrics: dict[str, object]) -> None:
+    """Print database-level activity health metrics."""
+    print(f"Database: {metrics['database_name']}")
+    print(
+        "Cache hit ratio: "
+        f"{_format_percent(metrics['cache_hit_ratio_percent'])}"
+    )
+    print(
+        "Rollback ratio: "
+        f"{_format_percent(metrics['rollback_ratio_percent'])}"
+    )
+    print(f"Temporary files: {metrics['temp_files']}")
+    print(f"Temporary bytes: {metrics['temp_bytes']}")
+    print(f"Deadlocks: {metrics['deadlocks']}")
+    if (
+        metrics["cache_hit_ratio_percent"] is None
+        and metrics["rollback_ratio_percent"] is None
+    ):
+        return
+
+    print(f"Transactions committed: {metrics['transactions_committed']}")
+    print(f"Transactions rolled back: {metrics['transactions_rolled_back']}")
+    print(f"Blocks read: {metrics['blocks_read']}")
+    print(f"Blocks hit: {metrics['blocks_hit']}")
+
+
 def _should_print_summary(result: HealthCheckResult) -> bool:
     """Return whether the CLI should print a health result summary line."""
     metrics = result.metrics
@@ -113,7 +143,16 @@ def _should_print_summary(result: HealthCheckResult) -> bool:
         return False
     if result.name == "Lock Health" and metrics["blocked_sessions"] == 0:
         return False
+    if result.name == "Database Health" and result.status == "healthy":
+        return False
     return True
+
+
+def _format_percent(value: object) -> str:
+    """Return a CLI-friendly percentage string."""
+    if value is None:
+        return "N/A"
+    return f"{float(value):.2f}%"
 
 
 if __name__ == "__main__":

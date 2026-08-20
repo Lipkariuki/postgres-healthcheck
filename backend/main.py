@@ -1,6 +1,7 @@
 """Command-line entry point for the PostgreSQL health check."""
 
 from checks.connections import check_connection_health
+from checks.locks import check_lock_health
 from checks.transactions import check_transaction_health
 from config import ConfigError
 from database import DatabaseConnectionError, get_connection
@@ -16,6 +17,7 @@ def main() -> None:
             results = [
                 check_connection_health(connection),
                 check_transaction_health(connection),
+                check_lock_health(connection),
             ]
             for index, result in enumerate(results):
                 if index > 0:
@@ -32,12 +34,15 @@ def _print_health_check_result(result: HealthCheckResult) -> None:
 
     print(result.name)
     print(f"Status: {result.status}")
-    print(result.summary)
+    if _should_print_summary(result):
+        print(result.summary)
 
     if result.name == "Connection Health":
         _print_connection_metrics(metrics)
     elif result.name == "Transaction Health":
         _print_transaction_metrics(metrics)
+    elif result.name == "Lock Health":
+        _print_lock_metrics(metrics)
 
     print()
     print("Recommendation:")
@@ -60,6 +65,9 @@ def _print_transaction_metrics(metrics: dict[str, object]) -> None:
     """Print transaction-specific health metrics."""
     print(f"Open transactions: {metrics['open_transactions']}")
     print(f"Long-running transactions: {metrics['long_running_transactions']}")
+    if metrics["open_transactions"] == 0:
+        return
+
     print(f"Oldest transaction PID: {metrics['oldest_transaction_pid']}")
     print(f"Oldest transaction age: {metrics['oldest_transaction_seconds']}")
     print(f"Oldest transaction state: {metrics['oldest_transaction_state']}")
@@ -73,6 +81,39 @@ def _print_transaction_metrics(metrics: dict[str, object]) -> None:
         f"{metrics['oldest_transaction_wait_event_type']} / "
         f"{metrics['oldest_transaction_wait_event']}"
     )
+
+
+def _print_lock_metrics(metrics: dict[str, object]) -> None:
+    """Print lock-specific health metrics."""
+    print(f"Blocked sessions: {metrics['blocked_sessions']}")
+    print(f"Blocking sessions: {metrics['blocking_sessions']}")
+    if metrics["blocked_sessions"] == 0:
+        return
+
+    print(f"Blocked PID: {metrics['oldest_blocked_pid']}")
+    print(f"Blocked for: {metrics['oldest_blocked_seconds']} seconds")
+    print(
+        "Wait event: "
+        f"{metrics['blocked_wait_event_type']} / {metrics['blocked_wait_event']}"
+    )
+    print(f"Root blocker PID: {metrics['root_blocker_pid']}")
+    print(f"Blocker user: {metrics['root_blocker_user']}")
+    print(f"Blocker application: {metrics['root_blocker_application']}")
+    print(f"Blocker state: {metrics['root_blocker_state']}")
+    print(
+        "Blocker transaction age: "
+        f"{metrics['root_blocker_transaction_seconds']}"
+    )
+
+
+def _should_print_summary(result: HealthCheckResult) -> bool:
+    """Return whether the CLI should print a health result summary line."""
+    metrics = result.metrics
+    if result.name == "Transaction Health" and metrics["open_transactions"] == 0:
+        return False
+    if result.name == "Lock Health" and metrics["blocked_sessions"] == 0:
+        return False
+    return True
 
 
 if __name__ == "__main__":

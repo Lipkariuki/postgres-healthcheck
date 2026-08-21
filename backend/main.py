@@ -2,7 +2,9 @@
 
 from checks.connections import check_connection_health
 from checks.database_health import check_database_health
+from checks.index_health import check_index_health
 from checks.locks import check_lock_health
+from checks.table_health import check_table_health
 from checks.transactions import check_transaction_health
 from config import ConfigError
 from database import DatabaseConnectionError, get_connection
@@ -20,6 +22,8 @@ def main() -> None:
                 check_transaction_health(connection),
                 check_lock_health(connection),
                 check_database_health(connection),
+                check_table_health(connection),
+                check_index_health(connection),
             ]
             for index, result in enumerate(results):
                 if index > 0:
@@ -47,6 +51,10 @@ def _print_health_check_result(result: HealthCheckResult) -> None:
         _print_lock_metrics(metrics)
     elif result.name == "Database Health":
         _print_database_metrics(metrics)
+    elif result.name == "Table Health":
+        _print_table_metrics(metrics)
+    elif result.name == "Index Health":
+        _print_index_metrics(metrics)
 
     print()
     print("Recommendation:")
@@ -136,6 +144,56 @@ def _print_database_metrics(metrics: dict[str, object]) -> None:
     print(f"Blocks hit: {metrics['blocks_hit']}")
 
 
+def _print_table_metrics(metrics: dict[str, object]) -> None:
+    """Print table maintenance health metrics."""
+    print(f"Tables checked: {metrics['tables_checked']}")
+    print(f"Tables with dead tuples: {metrics['tables_with_dead_tuples']}")
+    print(f"Warning tables: {metrics['warning_tables']}")
+    print(f"Critical tables: {metrics['critical_tables']}")
+    if metrics["warning_tables"] == 0 and metrics["critical_tables"] == 0:
+        return
+
+    print()
+    print("Most concerning table:")
+    print(f"{metrics['most_concerning_schema']}.{metrics['most_concerning_table']}")
+    print(f"Live tuples: {metrics['most_concerning_live_tuples']}")
+    print(f"Dead tuples: {metrics['most_concerning_dead_tuples']}")
+    print(
+        "Dead tuple ratio: "
+        f"{_format_percent(metrics['highest_dead_tuple_ratio_percent'])}"
+    )
+    print(f"Last autovacuum: {metrics['most_concerning_last_autovacuum']}")
+    print(f"Last autoanalyze: {metrics['most_concerning_last_autoanalyze']}")
+    print(f"Updates: {metrics['most_concerning_updates']}")
+    print(f"HOT updates: {metrics['most_concerning_hot_updates']}")
+
+
+def _print_index_metrics(metrics: dict[str, object]) -> None:
+    """Print index usage health metrics."""
+    print(f"Indexes checked: {metrics['indexes_checked']}")
+    print(f"Indexes used: {metrics['indexes_used']}")
+    print(f"Zero-scan indexes: {metrics['indexes_with_zero_scans']}")
+    print(f"Large review candidates: {metrics['large_zero_scan_indexes']}")
+    print(f"Protected zero-scan indexes: {metrics['protected_zero_scan_indexes']}")
+    if metrics["large_zero_scan_indexes"] == 0:
+        return
+
+    print()
+    print("Largest review candidate:")
+    print(f"{metrics['largest_review_candidate_name']}")
+    print(f"Table: {metrics['largest_review_candidate_table']}")
+    print(
+        "Size: "
+        f"{_format_bytes(metrics['largest_review_candidate_size_bytes'])}"
+    )
+    print("Scans: 0")
+    print(
+        "Tuples read/fetched: "
+        f"{metrics['largest_review_candidate_idx_tup_read']} / "
+        f"{metrics['largest_review_candidate_idx_tup_fetch']}"
+    )
+
+
 def _should_print_summary(result: HealthCheckResult) -> bool:
     """Return whether the CLI should print a health result summary line."""
     metrics = result.metrics
@@ -145,6 +203,10 @@ def _should_print_summary(result: HealthCheckResult) -> bool:
         return False
     if result.name == "Database Health" and result.status == "healthy":
         return False
+    if result.name == "Table Health" and result.status == "healthy":
+        return False
+    if result.name == "Index Health" and result.status == "healthy":
+        return False
     return True
 
 
@@ -153,6 +215,15 @@ def _format_percent(value: object) -> str:
     if value is None:
         return "N/A"
     return f"{float(value):.2f}%"
+
+
+def _format_bytes(value: object) -> str:
+    """Return a CLI-friendly byte-size string."""
+    if value is None:
+        return "N/A"
+    size_bytes = int(value)
+    size_mb = size_bytes / (1024 * 1024)
+    return f"{size_mb:.0f} MB"
 
 
 if __name__ == "__main__":

@@ -1,6 +1,10 @@
 services:
   postgres:
     image: postgres:16
+    command:
+          - postgres
+          - -c
+            - shared_preload_libraries=pg_stat_statements
     container_name: pg-health-lab
     restart: unless-stopped
     environment:

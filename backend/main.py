@@ -5,6 +5,7 @@ from checks.database_health import check_database_health
 from checks.index_health import check_index_health
 from checks.locks import check_lock_health
 from checks.query_health import check_query_health
+from checks.replication_health import check_replication_health
 from checks.table_health import check_table_health
 from checks.transactions import check_transaction_health
 from config import ConfigError
@@ -26,6 +27,7 @@ def main() -> None:
                 check_table_health(connection),
                 check_index_health(connection),
                 check_query_health(connection),
+                check_replication_health(connection),
             ]
             for index, result in enumerate(results):
                 if index > 0:
@@ -59,6 +61,8 @@ def _print_health_check_result(result: HealthCheckResult) -> None:
         _print_index_metrics(metrics)
     elif result.name == "Query Health":
         _print_query_metrics(metrics)
+    elif result.name == "Replication & WAL Health":
+        _print_replication_metrics(metrics)
 
     print()
     print("Recommendation:")
@@ -237,6 +241,40 @@ def _print_query_metrics(metrics: dict[str, object]) -> None:
     )
 
 
+def _print_replication_metrics(metrics: dict[str, object]) -> None:
+    """Print replication and WAL health metrics."""
+    print(f"Server role: {metrics['server_role']}")
+    print(f"Replicas connected: {metrics['replicas_connected']}")
+    print(f"Warning replicas: {metrics['warning_replicas']}")
+    print(f"Critical replicas: {metrics['critical_replicas']}")
+    print(f"WAL bytes recorded: {metrics['wal_bytes']}")
+    print(f"WAL records: {metrics['wal_records']}")
+    print(f"WAL buffers full: {metrics['wal_buffers_full']}")
+
+    if metrics["server_role"] == "replica":
+        print(f"Last WAL receive LSN: {metrics['last_wal_receive_lsn']}")
+        print(f"Last WAL replay LSN: {metrics['last_wal_replay_lsn']}")
+        print(
+            "Replay delay: "
+            f"{_format_seconds(metrics['replay_delay_seconds'])}"
+        )
+        return
+
+    if metrics["replicas_connected"] == 0:
+        return
+
+    print()
+    print("Most lagging replica:")
+    print(f"Application: {metrics['most_lagging_replica_application']}")
+    print(f"Client address: {metrics['most_lagging_replica_client_addr']}")
+    print(f"State: {metrics['most_lagging_replica_state']}")
+    print(f"Sync state: {metrics['most_lagging_replica_sync_state']}")
+    print(
+        "Replay lag: "
+        f"{_format_seconds(metrics['most_lagging_replay_lag_seconds'])}"
+    )
+
+
 def _should_print_summary(result: HealthCheckResult) -> bool:
     """Return whether the CLI should print a health result summary line."""
     metrics = result.metrics
@@ -255,6 +293,8 @@ def _should_print_summary(result: HealthCheckResult) -> bool:
         and result.status == "healthy"
         and result.metrics["pg_stat_statements_available"]
     ):
+        return False
+    if result.name == "Replication & WAL Health" and result.status == "healthy":
         return False
     return True
 
@@ -280,6 +320,13 @@ def _format_ms(value: object) -> str:
     if value is None:
         return "N/A"
     return f"{float(value):.2f} ms"
+
+
+def _format_seconds(value: object) -> str:
+    """Return a CLI-friendly second duration."""
+    if value is None:
+        return "N/A"
+    return f"{float(value):.2f} seconds"
 
 
 if __name__ == "__main__":

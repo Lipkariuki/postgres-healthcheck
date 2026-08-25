@@ -4,6 +4,7 @@ from checks.connections import check_connection_health
 from checks.database_health import check_database_health
 from checks.index_health import check_index_health
 from checks.locks import check_lock_health
+from checks.query_health import check_query_health
 from checks.table_health import check_table_health
 from checks.transactions import check_transaction_health
 from config import ConfigError
@@ -24,6 +25,7 @@ def main() -> None:
                 check_database_health(connection),
                 check_table_health(connection),
                 check_index_health(connection),
+                check_query_health(connection),
             ]
             for index, result in enumerate(results):
                 if index > 0:
@@ -55,6 +57,8 @@ def _print_health_check_result(result: HealthCheckResult) -> None:
         _print_table_metrics(metrics)
     elif result.name == "Index Health":
         _print_index_metrics(metrics)
+    elif result.name == "Query Health":
+        _print_query_metrics(metrics)
 
     print()
     print("Recommendation:")
@@ -194,6 +198,45 @@ def _print_index_metrics(metrics: dict[str, object]) -> None:
     )
 
 
+def _print_query_metrics(metrics: dict[str, object]) -> None:
+    """Print query latency and cumulative execution health metrics."""
+    if not metrics["pg_stat_statements_available"]:
+        return
+
+    print(f"Queries checked: {metrics['queries_checked']}")
+    print(f"Total calls: {metrics['total_calls']}")
+    print(f"Warning latency queries: {metrics['warning_latency_queries']}")
+    print(f"Critical latency queries: {metrics['critical_latency_queries']}")
+    if metrics["queries_checked"] == 0:
+        return
+
+    print()
+    print("Slowest average query:")
+    print(metrics["slowest_mean_query"])
+    print(f"Calls: {metrics['slowest_mean_calls']}")
+    print(
+        "Mean execution time: "
+        f"{_format_ms(metrics['slowest_mean_exec_time_ms'])}"
+    )
+    print(
+        "Maximum execution time: "
+        f"{_format_ms(metrics['slowest_mean_max_exec_time_ms'])}"
+    )
+    print(
+        "Total execution time: "
+        f"{_format_ms(metrics['slowest_mean_total_exec_time_ms'])}"
+    )
+
+    print()
+    print("Top cumulative query:")
+    print(metrics["top_total_query"])
+    print(f"Calls: {metrics['top_total_calls']}")
+    print(
+        "Total execution time: "
+        f"{_format_ms(metrics['top_total_exec_time_ms'])}"
+    )
+
+
 def _should_print_summary(result: HealthCheckResult) -> bool:
     """Return whether the CLI should print a health result summary line."""
     metrics = result.metrics
@@ -206,6 +249,12 @@ def _should_print_summary(result: HealthCheckResult) -> bool:
     if result.name == "Table Health" and result.status == "healthy":
         return False
     if result.name == "Index Health" and result.status == "healthy":
+        return False
+    if (
+        result.name == "Query Health"
+        and result.status == "healthy"
+        and result.metrics["pg_stat_statements_available"]
+    ):
         return False
     return True
 
@@ -224,6 +273,13 @@ def _format_bytes(value: object) -> str:
     size_bytes = int(value)
     size_mb = size_bytes / (1024 * 1024)
     return f"{size_mb:.0f} MB"
+
+
+def _format_ms(value: object) -> str:
+    """Return a CLI-friendly millisecond duration."""
+    if value is None:
+        return "N/A"
+    return f"{float(value):.2f} ms"
 
 
 if __name__ == "__main__":
